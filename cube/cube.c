@@ -4230,6 +4230,43 @@ static void processCommand(struct android_app *app, int32_t cmd) {
                 __android_log_print(ANDROID_LOG_INFO, appTag, "argc = %i", argc);
                 for (int i = 0; i < argc; i++) __android_log_print(ANDROID_LOG_INFO, appTag, "argv[%i] = %s", i, argv[i]);
 
+                __android_log_print(ANDROID_LOG_INFO, appTag, "Brad's version");
+                {
+                    static const int WIDTH = 512;
+                    static const int HEIGHT = 512;
+                    AHardwareBuffer_Desc desc;
+                    desc.format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+                    desc.width = WIDTH;
+                    desc.height = HEIGHT;
+                    desc.layers = 1;
+                    desc.stride = 0;
+                    desc.rfu0 = 0;
+                    desc.rfu1 = 0;
+                    desc.usage =  AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE;
+                    AHardwareBuffer *buffer;
+                    int result = AHardwareBuffer_allocate(&desc, &buffer);
+                    __android_log_print(ANDROID_LOG_INFO, appTag, "allocate returned %d", result);
+
+                    void* contents;
+                    result = AHardwareBuffer_lock(buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY, -1, NULL, &contents);
+                    __android_log_print(ANDROID_LOG_INFO, appTag, "lock returned %d", result);
+
+                    for(int y = 0; y < HEIGHT; y++) {
+                        for(int x = 0; x < WIDTH; x++) {
+                            uint8_t *pixel = ((uint8_t*)contents) + 4 * (x + y * WIDTH);
+                            int square = (y / 8 + x / 8) % 2;
+                            // XXX ABGR or RGBA?
+                            pixel[0] = (square == 1) ? 255 : 0;
+                            pixel[1] = (square == 1) ? 255 : 0;
+                            pixel[2] = (square == 1) ? 255 : 0;
+                            pixel[3] = 255;
+                        }
+                    }
+
+                    result = AHardwareBuffer_unlock(buffer, NULL);
+                    __android_log_print(ANDROID_LOG_INFO, appTag, "unlock returned %d", result);
+                }
+
                 demo_init(&demo, argc, argv);
 
                 // Free the argv malloc'd by get_args
