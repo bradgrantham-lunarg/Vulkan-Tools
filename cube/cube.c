@@ -50,6 +50,9 @@
 
 #ifdef ANDROID
 #include "vulkan_wrapper.h"
+#include <android/log.h>
+#include <android_native_app_glue.h>
+#include "android_util.h"
 #else
 #include <vulkan/vulkan.h>
 #endif
@@ -153,6 +156,12 @@ static PFN_vkGetDeviceProcAddr g_gdpa = NULL;
             ERR_EXIT("vkGetDeviceProcAddr failed to find vk" #entrypoint, "vkGetDeviceProcAddr Failure");        \
         }                                                                                                        \
     }
+
+#if defined(VK_USE_PLATFORM_ANDROID_KHR)
+
+char *appTag = (char *)APP_SHORT_NAME;
+
+#endif
 
 /*
  * structure to track all objects related to a texture.
@@ -407,6 +416,7 @@ struct demo {
     PFN_vkDestroySwapchainKHR fpDestroySwapchainKHR;
     PFN_vkGetSwapchainImagesKHR fpGetSwapchainImagesKHR;
     PFN_vkAcquireNextImageKHR fpAcquireNextImageKHR;
+    PFN_vkGetAndroidHardwareBufferPropertiesANDROID fpGetAndroidHardwareBufferPropertiesANDROID;
     PFN_vkQueuePresentKHR fpQueuePresentKHR;
     PFN_vkGetRefreshCycleDurationGOOGLE fpGetRefreshCycleDurationGOOGLE;
     PFN_vkGetPastPresentationTimingGOOGLE fpGetPastPresentationTimingGOOGLE;
@@ -469,6 +479,8 @@ struct demo {
     PFN_vkCmdInsertDebugUtilsLabelEXT CmdInsertDebugUtilsLabelEXT;
     PFN_vkSetDebugUtilsObjectNameEXT SetDebugUtilsObjectNameEXT;
     VkDebugUtilsMessengerEXT dbg_messenger;
+
+    PFN_vkGetAndroidHardwareBufferPropertiesANDROID GetAndroidHardwareBufferPropertiesANDROID;
 
     uint32_t current_buffer;
     uint32_t queue_family_count;
@@ -1607,6 +1619,58 @@ static void demo_prepare_texture_image(struct demo *demo, const char *filename, 
     int32_t tex_height;
     VkResult U_ASSERT_ONLY err;
     bool U_ASSERT_ONLY pass;
+
+#if defined(VK_USE_PLATFORM_ANDROID_KHR)
+
+    __android_log_print(ANDROID_LOG_INFO, appTag, "load \"%s\"", filename);
+
+    {
+        static const int WIDTH = 512;
+        static const int HEIGHT = 512;
+        AHardwareBuffer_Desc desc;
+        desc.format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+        desc.width = WIDTH;
+        desc.height = HEIGHT;
+        desc.layers = 1;
+        desc.stride = 0;
+        desc.rfu0 = 0;
+        desc.rfu1 = 0;
+        desc.usage =  AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE;
+        AHardwareBuffer *buffer;
+        int result = AHardwareBuffer_allocate(&desc, &buffer);
+        __android_log_print(ANDROID_LOG_INFO, appTag, "allocate returned %d", result);
+
+        void* contents;
+        result = AHardwareBuffer_lock(buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY, -1, NULL, &contents);
+        __android_log_print(ANDROID_LOG_INFO, appTag, "lock returned %d", result);
+
+        for(int y = 0; y < HEIGHT; y++) {
+            for(int x = 0; x < WIDTH; x++) {
+                uint8_t *pixel = ((uint8_t*)contents) + 4 * (x + y * WIDTH);
+                int square = (y / 8 + x / 8) % 2;
+                // XXX ABGR or RGBA?
+                pixel[0] = (square == 1) ? 255 : 0;
+                pixel[1] = (square == 1) ? 255 : 0;
+                pixel[2] = (square == 1) ? 255 : 0;
+                pixel[3] = 255;
+            }
+        }
+
+        result = AHardwareBuffer_unlock(buffer, NULL);
+        __android_log_print(ANDROID_LOG_INFO, appTag, "unlock returned %d", result);
+
+        VkAndroidHardwareBufferFormatPropertiesANDROID ahb_format_props = {.sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_FORMAT_PROPERTIES_ANDROID, .pNext = NULL };
+        VkAndroidHardwareBufferPropertiesANDROID ahb_props = {.sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID, .pNext = &ahb_format_props };
+        if(NULL == demo->GetAndroidHardwareBufferPropertiesANDROID){
+            __android_log_print(ANDROID_LOG_INFO, appTag, "nope");
+        }
+        err = demo->GetAndroidHardwareBufferPropertiesANDROID(demo->device, buffer, &ahb_props);
+        __android_log_print(ANDROID_LOG_INFO, appTag, "line %d %d", __LINE__, err);
+        if(err) { abort(); }
+
+    }
+
+#endif
 
     if (!loadTexture(filename, NULL, NULL, &tex_width, &tex_height)) {
         ERR_EXIT("Failed to load textures", "Load Texture Failure");
@@ -3446,12 +3510,34 @@ static void demo_init_vk(struct demo *demo) {
     err = vkEnumerateDeviceExtensionProperties(demo->gpu, NULL, &device_extension_count, NULL);
     assert(!err);
 
+#if 0
+#if defined(VK_USE_PLATFORM_ANDROID_KHR)
+    VkBool32 EMAHBExtFound = 0;
+#endif
+            if (!strcmp(VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME, instance_extensions[i].extensionName)) {
+                EMAHBExtFound = 1;
+                demo->extension_names[demo->enabled_extension_count++] = VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME;
+            }
+#if defined(VK_USE_PLATFORM_ANDROID_KHR)
+    if (!EMAHBExtFound) {
+        ERR_EXIT("vkEnumerateInstanceExtensionProperties failed to find the " VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME
+                 " extension.\n\n"
+                 "Do you have a compatible Vulkan installable client driver (ICD) installed?\n"
+                 "Please look at the Getting Started guide for additional information.\n",
+                 "vkCreateInstance Failure");
+    }
+#endif
+#endif
+    demo->extension_names[demo->enabled_extension_count++] = VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME;
+
     if (device_extension_count > 0) {
         VkExtensionProperties *device_extensions = malloc(sizeof(VkExtensionProperties) * device_extension_count);
         err = vkEnumerateDeviceExtensionProperties(demo->gpu, NULL, &device_extension_count, device_extensions);
         assert(!err);
 
+        __android_log_print(ANDROID_LOG_INFO, appTag, "device extensions");
         for (uint32_t i = 0; i < device_extension_count; i++) {
+            __android_log_print(ANDROID_LOG_INFO, appTag, "%d: %s", i, device_extensions[i].extensionName);
             if (!strcmp(VK_KHR_SWAPCHAIN_EXTENSION_NAME, device_extensions[i].extensionName)) {
                 swapchainExtFound = 1;
                 demo->extension_names[demo->enabled_extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -3508,6 +3594,12 @@ static void demo_init_vk(struct demo *demo) {
                  " extension.\n\nDo you have a compatible Vulkan installable client driver (ICD) installed?\n"
                  "Please look at the Getting Started guide for additional information.\n",
                  "vkCreateInstance Failure");
+    }
+
+    demo->GetAndroidHardwareBufferPropertiesANDROID =
+        (PFN_vkGetAndroidHardwareBufferPropertiesANDROID)vkGetInstanceProcAddr(demo->inst, "vkGetAndroidHardwareBufferPropertiesANDROID");
+    if (NULL == demo->GetAndroidHardwareBufferPropertiesANDROID) {
+        ERR_EXIT("GetProcAddr: Failed to init VK_ANDROID_external_memory_android_hardware_buffer\n", "GetProcAddr: Failure");
     }
 
     if (demo->validate) {
@@ -4191,9 +4283,6 @@ static void demo_main(struct demo *demo, void *caMetalLayer, int argc, const cha
 }
 
 #elif defined(VK_USE_PLATFORM_ANDROID_KHR)
-#include <android/log.h>
-#include <android_native_app_glue.h>
-#include "android_util.h"
 
 static bool initialized = false;
 static bool active = false;
@@ -4223,7 +4312,6 @@ static void processCommand(struct android_app *app, int32_t cmd) {
                 // Use the following key to send arguments, i.e.
                 // --es args "--validate"
                 const char key[] = "args";
-                char *appTag = (char *)APP_SHORT_NAME;
                 int argc = 0;
                 char **argv = get_args(app, key, appTag, &argc);
 
@@ -4231,41 +4319,7 @@ static void processCommand(struct android_app *app, int32_t cmd) {
                 for (int i = 0; i < argc; i++) __android_log_print(ANDROID_LOG_INFO, appTag, "argv[%i] = %s", i, argv[i]);
 
                 __android_log_print(ANDROID_LOG_INFO, appTag, "Brad's version");
-                {
-                    static const int WIDTH = 512;
-                    static const int HEIGHT = 512;
-                    AHardwareBuffer_Desc desc;
-                    desc.format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
-                    desc.width = WIDTH;
-                    desc.height = HEIGHT;
-                    desc.layers = 1;
-                    desc.stride = 0;
-                    desc.rfu0 = 0;
-                    desc.rfu1 = 0;
-                    desc.usage =  AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE;
-                    AHardwareBuffer *buffer;
-                    int result = AHardwareBuffer_allocate(&desc, &buffer);
-                    __android_log_print(ANDROID_LOG_INFO, appTag, "allocate returned %d", result);
 
-                    void* contents;
-                    result = AHardwareBuffer_lock(buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY, -1, NULL, &contents);
-                    __android_log_print(ANDROID_LOG_INFO, appTag, "lock returned %d", result);
-
-                    for(int y = 0; y < HEIGHT; y++) {
-                        for(int x = 0; x < WIDTH; x++) {
-                            uint8_t *pixel = ((uint8_t*)contents) + 4 * (x + y * WIDTH);
-                            int square = (y / 8 + x / 8) % 2;
-                            // XXX ABGR or RGBA?
-                            pixel[0] = (square == 1) ? 255 : 0;
-                            pixel[1] = (square == 1) ? 255 : 0;
-                            pixel[2] = (square == 1) ? 255 : 0;
-                            pixel[3] = 255;
-                        }
-                    }
-
-                    result = AHardwareBuffer_unlock(buffer, NULL);
-                    __android_log_print(ANDROID_LOG_INFO, appTag, "unlock returned %d", result);
-                }
 
                 demo_init(&demo, argc, argv);
 
